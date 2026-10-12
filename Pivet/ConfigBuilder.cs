@@ -1072,6 +1072,11 @@ namespace Pivet
             }
 
             PromptWithDefault("Enter the remote repository URL", ref repo.Url);
+
+            var branch = repo.Branch ?? "";
+            PromptWithDefault("Enter the branch to push to, so jobs can share a repository (blank for master)", ref branch);
+            repo.Branch = string.IsNullOrWhiteSpace(branch) ? null : branch.Trim();
+
             PromptWithDefault("Enter the git username", ref repo.User);
             
             string tempPassword = PromptForPassword("Enter the git password/token");

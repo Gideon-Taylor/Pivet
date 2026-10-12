@@ -14,7 +14,7 @@ namespace Pivet.Data
         RepositoryConfig config;
         private string _repoBase;
         double lastProgress;
-        internal void InitRepository(string path, RepositoryConfig config)
+        internal bool InitRepository(string path, RepositoryConfig config)
         {
             this.config = config;
             Logger.Write("Initializing Repository.");
@@ -33,7 +33,12 @@ namespace Pivet.Data
             }
             else
             {
-                if (config.Url.Length > 0)
+                if (config.UsesBranch)
+                {
+                    /* the branch is fetched on its own below, so the other jobs' branches aren't downloaded */
+                    Repository.Init(_repoBase);
+                }
+                else if (config.Url.Length > 0)
                 {
                     Logger.Write("Repository URL is set, cloning repo to disk.");
                     /* repository is configured with a remote, try cloning from there */
@@ -77,6 +82,11 @@ namespace Pivet.Data
                 }
             }
 
+            if (config.UsesBranch && SwitchToBranch(config.Branch.Trim()) == false)
+            {
+                return false;
+            }
+
             /* confirm .gitignore is present */
             var gitAttrFile = Path.Join(_repoBase, ".gitattributes");
             if (File.Exists(gitAttrFile) == false)
@@ -90,6 +100,78 @@ namespace Pivet.Data
                 Commit commit = _repository.Commit("Added gitattributes for consistent line endings", author, committer);
             }
 
+            return true;
+        }
+
+        /* Puts the working folder on the job's branch: the local branch if there is one, otherwise the
+         * branch from origin, otherwise a new branch with its own history (like git switch --orphan). */
+        private bool SwitchToBranch(string branch)
+        {
+            string branchRef = "refs/heads/" + branch;
+            if (Reference.IsValidName(branchRef) == false)
+            {
+                Logger.Error($"'{branch}' is not a valid branch name.");
+                return false;
+            }
+
+            if (_repository.Head.CanonicalName == branchRef)
+            {
+                return true;
+            }
+
+            Branch local = _repository.Branches[branch];
+            if (local == null && config.Url.Length > 0)
+            {
+                IEnumerable<Reference> remoteRefs;
+                try
+                {
+                    remoteRefs = Repository.ListRemoteReferences(config.Url, Credentials).ToList();
+                }
+                catch (Exception ex)
+                {
+                    /* don't start a new branch on a failed lookup: a branch that does exist would then be rejected on push */
+                    Logger.Error("Unable to read the branches on origin, so the job was stopped. Check the URL and credentials, and create the repository first if it doesn't exist. " + ex.Message);
+                    return false;
+                }
+
+                if (remoteRefs.Any(r => r.CanonicalName == branchRef))
+                {
+                    Logger.Write($"Fetching branch '{branch}' from origin.");
+                    string trackingRef = "refs/remotes/origin/" + branch;
+                    Commands.Fetch(_repository, "origin", new[] { $"+{branchRef}:{trackingRef}" }, new FetchOptions() { CredentialsProvider = Credentials }, null);
+                    Branch tracking = _repository.Branches[trackingRef];
+                    local = _repository.CreateBranch(branch, tracking.Tip);
+                    _repository.Branches.Update(local, b => b.TrackedBranch = tracking.CanonicalName);
+                }
+            }
+
+            if (local != null)
+            {
+                Logger.Write($"Switching to branch '{branch}'.");
+                /* Force: every file is written again from the database, so local changes don't need keeping */
+                Commands.Checkout(_repository, local, new CheckoutOptions() { CheckoutModifiers = CheckoutModifiers.Force });
+            }
+            else
+            {
+                Logger.Write($"Branch '{branch}' doesn't exist yet, starting it with its own history.");
+                foreach (var entry in _repository.Index.ToList())
+                {
+                    var file = Path.Combine(_repoBase, entry.Path);
+                    if (File.Exists(file))
+                    {
+                        File.Delete(file);
+                    }
+                }
+                _repository.Index.Clear();
+                _repository.Index.Write();
+                _repository.Refs.UpdateTarget("HEAD", branchRef);
+            }
+            return true;
+        }
+
+        private Credentials Credentials(string url, string usernameFromUrl, SupportedCredentialTypes types)
+        {
+            return new UsernamePasswordCredentials { Username = config.User, Password = config.Password };
         }
 
         private void ReportProgress(double progress)
@@ -293,7 +375,7 @@ namespace Pivet.Data
                 };
                 try
                 {
-                    _repository.Network.Push(remote, @"refs/heads/master", options);
+                    _repository.Network.Push(remote, config.PushRef, options);
                 }
                 catch (Exception ex)
                 {
