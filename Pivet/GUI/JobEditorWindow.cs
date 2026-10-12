@@ -23,6 +23,7 @@ namespace Pivet.GUI
         private TextField userID;
         private TextField password;
         private TextField remoteURL;
+        private TextField branch;
         private ComboBox commitStyle;
         private CheckBox commitByOprid;
 
@@ -56,6 +57,8 @@ namespace Pivet.GUI
             selectedJob.Repository.User = userID.Text.ToString();
             selectedJob.Repository.EncryptedPassword = password.Text.ToString();
             selectedJob.Repository.Url = remoteURL.Text.ToString();
+            var branchName = branch.Text.ToString().Trim();
+            selectedJob.Repository.Branch = branchName.Length > 0 ? branchName : null;
             selectedJob.Repository.CommitByOprid = commitByOprid.Checked;
             
             // Set commit style from combo box
@@ -157,6 +160,7 @@ namespace Pivet.GUI
             userID.Text = selectedJob.Repository.User;
             password.Text = selectedJob.Repository.EncryptedPassword;
             remoteURL.Text = selectedJob.Repository.Url;
+            branch.Text = selectedJob.Repository.Branch ?? "";
             commitByOprid.Checked = selectedJob.Repository.CommitByOprid;
             
             // Set commit style combo box
@@ -466,6 +470,30 @@ namespace Pivet.GUI
 
             repoFrame.Add(label, remoteURL);
 
+            label = new Label("Branch: ")
+            {
+                X = 1,
+                Y = Pos.Bottom(remoteURL) + 1,
+                AutoSize = true
+            };
+
+            branch = new TextField()
+            {
+                X = Pos.Right(label),
+                Y = Pos.Top(label),
+                Height = 1,
+                Width = 30
+            };
+
+            var branchHint = new Label("(blank for master)")
+            {
+                X = Pos.Right(branch) + 1,
+                Y = Pos.Top(branch),
+                AutoSize = true
+            };
+
+            repoFrame.Add(label, branch, branchHint);
+
             saveButton = new Button("Save Changes")
             {
                 X = 1,
@@ -513,6 +541,7 @@ namespace Pivet.GUI
             userID.TextChanged += MarkDirty;
             password.TextChanged += MarkDirty;
             remoteURL.TextChanged += MarkDirty;
+            branch.TextChanged += MarkDirty;
             commitStyle.SelectedItemChanged += MarkDirty_List;
             commitByOprid.Toggled += MarkDirty_Checkbox;
             Closing += JobEditorWindow_Closing;

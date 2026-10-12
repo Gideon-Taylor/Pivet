@@ -337,6 +337,22 @@ namespace Pivet.GUI
                 {
                     result.AddWarning("Repository password not specified", $"{context}.Repository.Password");
                 }
+
+                if (job.Repository.UsesBranch && LibGit2Sharp.Reference.IsValidName(job.Repository.PushRef) == false)
+                {
+                    result.AddError($"'{job.Repository.Branch}' is not a valid branch name", $"{context}.Repository.Branch");
+                }
+
+                if (job.Repository.UsesBranch && config?.Jobs != null)
+                {
+                    var sharing = config.Jobs.Where(j => j != job && j.Repository != null
+                        && string.Equals(j.Repository.Url, job.Repository.Url, StringComparison.OrdinalIgnoreCase)
+                        && j.Repository.PushRef == job.Repository.PushRef).Select(j => j.Name).ToList();
+                    if (sharing.Count > 0)
+                    {
+                        result.AddWarning($"Branch '{job.Repository.Branch}' is also used by job(s) {string.Join(", ", sharing)} on the same repository", $"{context}.Repository.Branch");
+                    }
+                }
             }
         }
     }

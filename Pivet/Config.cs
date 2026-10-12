@@ -172,6 +172,17 @@ namespace Pivet
         [JsonProperty]
         public CommitStyleOptions CommitStyle = CommitStyleOptions.SINGLE_COMMIT;
 
+        /* Branch to commit to and push. Lets several jobs share one remote repository, one branch each.
+         * Leave empty to keep the original behaviour (clone the default branch, push to master). */
+        [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+        public string Branch;
+
+        [JsonIgnore]
+        public bool UsesBranch => string.IsNullOrWhiteSpace(Branch) == false;
+
+        [JsonIgnore]
+        public string PushRef => UsesBranch ? "refs/heads/" + Branch.Trim() : "refs/heads/master";
+
         [JsonIgnore]
         public string Password
         {

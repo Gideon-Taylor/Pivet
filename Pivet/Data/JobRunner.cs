@@ -38,7 +38,10 @@ namespace Pivet.Data
             Directory.CreateDirectory(job.OutputFolder);
 
             VersionController versionController = new VersionController();
-            versionController.InitRepository(job.OutputFolder, job.Repository);
+            if (versionController.InitRepository(job.OutputFolder, job.Repository) == false)
+            {
+                return new Tuple<bool, string>(false, "Error preparing the repository.");
+            }
 
 	        profileRepoPath = job.OutputFolder;
 

@@ -14,7 +14,7 @@ namespace Pivet.Data
         RepositoryConfig config;
         private string _repoBase;
         double lastProgress;
-        internal void InitRepository(string path, RepositoryConfig config)
+        internal bool InitRepository(string path, RepositoryConfig config)
         {
             this.config = config;
             Logger.Write("Initializing Repository.");
@@ -33,7 +33,12 @@ namespace Pivet.Data
             }
             else
             {
-                if (config.Url.Length > 0)
+                if (config.UsesBranch)
+                {
+                    /* the branch is fetched on its own below, so the other jobs' branches aren't downloaded */
+                    Repository.Init(_repoBase);
+                }
+                else if (config.Url.Length > 0)
                 {
                     Logger.Write("Repository URL is set, cloning repo to disk.");
                     /* repository is configured with a remote, try cloning from there */
@@ -77,6 +82,11 @@ namespace Pivet.Data
                 }
             }
 
+            if (config.UsesBranch && SwitchToBranch(config.Branch.Trim()) == false)
+            {
+                return false;
+            }
+
             /* confirm .gitignore is present */
             var gitAttrFile = Path.Join(_repoBase, ".gitattributes");
             if (File.Exists(gitAttrFile) == false)
@@ -90,6 +100,94 @@ namespace Pivet.Data
                 Commit commit = _repository.Commit("Added gitattributes for consistent line endings", author, committer);
             }
 
+            return true;
+        }
+
+        /* Puts the working folder on the job's branch: the local branch if there is one, otherwise the
+         * branch from origin, otherwise a new branch with its own history (like git switch --orphan). */
+        private bool SwitchToBranch(string branch)
+        {
+            string branchRef = "refs/heads/" + branch;
+            if (Reference.IsValidName(branchRef) == false)
+            {
+                Logger.Error($"'{branch}' is not a valid branch name.");
+                return false;
+            }
+
+            if (_repository.Head.CanonicalName == branchRef)
+            {
+                return true;
+            }
+
+            Branch local = _repository.Branches[branch];
+            if (local == null && config.Url.Length > 0)
+            {
+                IEnumerable<Reference> remoteRefs;
+                try
+                {
+                    remoteRefs = Repository.ListRemoteReferences(config.Url, Credentials).ToList();
+                }
+                catch (Exception ex)
+                {
+                    /* don't start a new branch on a failed lookup: a branch that does exist would then be rejected on push */
+                    Logger.Error("Unable to read the branches on origin, so the job was stopped. Check the URL and credentials, and create the repository first if it doesn't exist. " + ex.Message);
+                    return false;
+                }
+
+                if (remoteRefs.Any(r => r.CanonicalName == branchRef))
+                {
+                    Logger.Write($"Fetching branch '{branch}' from origin.");
+                    string trackingRef = "refs/remotes/origin/" + branch;
+                    Commands.Fetch(_repository, "origin", new[] { $"+{branchRef}:{trackingRef}" }, new FetchOptions() { CredentialsProvider = Credentials }, null);
+                    Branch tracking = _repository.Branches[trackingRef];
+                    local = _repository.CreateBranch(branch, tracking.Tip);
+                    _repository.Branches.Update(local, b => b.TrackedBranch = tracking.CanonicalName);
+                }
+            }
+
+            if (local != null)
+            {
+                Logger.Write($"Switching to branch '{branch}'.");
+                /* Force: every file is written again from the database, so local changes don't need keeping */
+                Commands.Checkout(_repository, local, new CheckoutOptions() { CheckoutModifiers = CheckoutModifiers.Force });
+            }
+            else
+            {
+                Logger.Write($"Branch '{branch}' doesn't exist yet, starting it with its own history.");
+                foreach (var entry in _repository.Index.ToList())
+                {
+                    var file = Path.Combine(_repoBase, entry.Path);
+                    if (File.Exists(file))
+                    {
+                        File.Delete(file);
+                    }
+                }
+                _repository.Index.Clear();
+                _repository.Index.Write();
+                _repository.Refs.UpdateTarget("HEAD", branchRef);
+            }
+            return true;
+        }
+
+        /* Commits what is staged, unless it's the same as the last commit. After a fresh checkout (CRLF, from
+         * .gitattributes), a file rewritten with the same content but LF line endings is reported as modified,
+         * yet staging it changes nothing. Forcing those commits left empty commits in the history. */
+        private Commit CommitIfChanged(string message, Signature author, Signature committer)
+        {
+            try
+            {
+                return _repository.Commit(message, author, committer);
+            }
+            catch (EmptyCommitException)
+            {
+                Logger.Write("Nothing changed, no commit made: " + message);
+                return null;
+            }
+        }
+
+        private Credentials Credentials(string url, string usernameFromUrl, SupportedCredentialTypes types)
+        {
+            return new UsernamePasswordCredentials { Username = config.User, Password = config.Password };
         }
 
         private void ReportProgress(double progress)
@@ -147,7 +245,7 @@ namespace Pivet.Data
                         var oprid = opr.Key;
                         Signature author = new Signature(oprid, oprid, DateTime.Now);
                         Signature committer = author;
-                        Commit commit = _repository.Commit("Changes made by " + oprid, author, committer, new CommitOptions() { AllowEmptyCommit = true });
+                        Commit commit = CommitIfChanged("Changes made by " + oprid, author, committer);
                     }
                 }
             }
@@ -165,7 +263,7 @@ namespace Pivet.Data
                         {
                             commitString = Program.CustomCommitMessage;
                         }
-                        Commit commit = _repository.Commit(commitString, author, committer, new CommitOptions() { AllowEmptyCommit = true });
+                        Commit commit = CommitIfChanged(commitString, author, committer);
                     }
                     else if (config.CommitStyle == CommitStyleOptions.PEOPLECODE_SEPARATE)
                     {
@@ -187,7 +285,7 @@ namespace Pivet.Data
                             {
                                 commitString = "[PeopleCode] " + Program.CustomCommitMessage;
                             }
-                            commit = _repository.Commit(commitString, author, committer, new CommitOptions() { AllowEmptyCommit = true });
+                            commit = CommitIfChanged(commitString, author, committer);
                         }
                         /* Commit everything else */
                         if (everythingElse.Count > 0) {
@@ -199,7 +297,7 @@ namespace Pivet.Data
                             {
                                 commitString = "[Non-PeopleCode] " + Program.CustomCommitMessage;
                             }
-                            commit = _repository.Commit(commitString, author, committer, new CommitOptions() { AllowEmptyCommit = true });
+                            commit = CommitIfChanged(commitString, author, committer);
                         }
                     }
                     else if (config.CommitStyle == CommitStyleOptions.TOP_LEVEL_SEPARATE)
@@ -228,7 +326,7 @@ namespace Pivet.Data
                                 {
                                     commitString = $"[{topLevelFolder}] " + Program.CustomCommitMessage;
                                 }
-                                commit = _repository.Commit(commitString, author, committer, new CommitOptions() { AllowEmptyCommit = true });
+                                commit = CommitIfChanged(commitString, author, committer);
                             }
                         }
 
@@ -243,7 +341,7 @@ namespace Pivet.Data
                             {
                                 commitString = Program.CustomCommitMessage;
                             }
-                            commit = _repository.Commit(commitString, author, committer, new CommitOptions() { AllowEmptyCommit = true });
+                            commit = CommitIfChanged(commitString, author, committer);
                         }
                     }
                 }
@@ -254,7 +352,7 @@ namespace Pivet.Data
                 Commands.Stage(_repository, deletedFiles);
                 Signature author = new Signature("PIVET", "PIVET", DateTime.Now);
                 Signature committer = author;
-                Commit commit = _repository.Commit("Deleted Objects", author, committer, new CommitOptions() { AllowEmptyCommit = true });
+                Commit commit = CommitIfChanged("Deleted Objects", author, committer);
             }
 
             /* We have commited all changes, time to push if setup with a URL */
@@ -293,7 +391,7 @@ namespace Pivet.Data
                 };
                 try
                 {
-                    _repository.Network.Push(remote, @"refs/heads/master", options);
+                    _repository.Network.Push(remote, config.PushRef, options);
                 }
                 catch (Exception ex)
                 {
