@@ -169,6 +169,22 @@ namespace Pivet.Data
             return true;
         }
 
+        /* Commits what is staged, unless it's the same as the last commit. After a fresh checkout (CRLF, from
+         * .gitattributes), a file rewritten with the same content but LF line endings is reported as modified,
+         * yet staging it changes nothing. Forcing those commits left empty commits in the history. */
+        private Commit CommitIfChanged(string message, Signature author, Signature committer)
+        {
+            try
+            {
+                return _repository.Commit(message, author, committer);
+            }
+            catch (EmptyCommitException)
+            {
+                Logger.Write("Nothing changed, no commit made: " + message);
+                return null;
+            }
+        }
+
         private Credentials Credentials(string url, string usernameFromUrl, SupportedCredentialTypes types)
         {
             return new UsernamePasswordCredentials { Username = config.User, Password = config.Password };
@@ -229,7 +245,7 @@ namespace Pivet.Data
                         var oprid = opr.Key;
                         Signature author = new Signature(oprid, oprid, DateTime.Now);
                         Signature committer = author;
-                        Commit commit = _repository.Commit("Changes made by " + oprid, author, committer, new CommitOptions() { AllowEmptyCommit = true });
+                        Commit commit = CommitIfChanged("Changes made by " + oprid, author, committer);
                     }
                 }
             }
@@ -247,7 +263,7 @@ namespace Pivet.Data
                         {
                             commitString = Program.CustomCommitMessage;
                         }
-                        Commit commit = _repository.Commit(commitString, author, committer, new CommitOptions() { AllowEmptyCommit = true });
+                        Commit commit = CommitIfChanged(commitString, author, committer);
                     }
                     else if (config.CommitStyle == CommitStyleOptions.PEOPLECODE_SEPARATE)
                     {
@@ -269,7 +285,7 @@ namespace Pivet.Data
                             {
                                 commitString = "[PeopleCode] " + Program.CustomCommitMessage;
                             }
-                            commit = _repository.Commit(commitString, author, committer, new CommitOptions() { AllowEmptyCommit = true });
+                            commit = CommitIfChanged(commitString, author, committer);
                         }
                         /* Commit everything else */
                         if (everythingElse.Count > 0) {
@@ -281,7 +297,7 @@ namespace Pivet.Data
                             {
                                 commitString = "[Non-PeopleCode] " + Program.CustomCommitMessage;
                             }
-                            commit = _repository.Commit(commitString, author, committer, new CommitOptions() { AllowEmptyCommit = true });
+                            commit = CommitIfChanged(commitString, author, committer);
                         }
                     }
                     else if (config.CommitStyle == CommitStyleOptions.TOP_LEVEL_SEPARATE)
@@ -310,7 +326,7 @@ namespace Pivet.Data
                                 {
                                     commitString = $"[{topLevelFolder}] " + Program.CustomCommitMessage;
                                 }
-                                commit = _repository.Commit(commitString, author, committer, new CommitOptions() { AllowEmptyCommit = true });
+                                commit = CommitIfChanged(commitString, author, committer);
                             }
                         }
 
@@ -325,7 +341,7 @@ namespace Pivet.Data
                             {
                                 commitString = Program.CustomCommitMessage;
                             }
-                            commit = _repository.Commit(commitString, author, committer, new CommitOptions() { AllowEmptyCommit = true });
+                            commit = CommitIfChanged(commitString, author, committer);
                         }
                     }
                 }
@@ -336,7 +352,7 @@ namespace Pivet.Data
                 Commands.Stage(_repository, deletedFiles);
                 Signature author = new Signature("PIVET", "PIVET", DateTime.Now);
                 Signature committer = author;
-                Commit commit = _repository.Commit("Deleted Objects", author, committer, new CommitOptions() { AllowEmptyCommit = true });
+                Commit commit = CommitIfChanged("Deleted Objects", author, committer);
             }
 
             /* We have commited all changes, time to push if setup with a URL */
