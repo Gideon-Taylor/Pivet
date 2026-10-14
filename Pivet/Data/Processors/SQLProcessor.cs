@@ -183,27 +183,74 @@ namespace Pivet.Data.Processors
             }
             foreach (var item in _items)
             {
-                var fileName = GetFilePathForSQL(rootFolder, item.SQLID.CleanFileName(), item.SqlType);
-                Directory.CreateDirectory(new FileInfo(fileName).Directory.FullName);
+                var baseFileName = GetFilePathForSQL(rootFolder, item.SQLID.CleanFileName(), item.SqlType);
+                Directory.CreateDirectory(new FileInfo(baseFileName).Directory.FullName);
 
-                var sqlText = item.GetContents(_conn);
-                try
+                /* One file per text: the default text keeps the plain name, and each platform, market or
+                 * effective-dated version gets its own file next to it, e.g. NAME.sql and NAME.Microsoft.sql. */
+                var usedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var texts = item.GetContents(_conn);
+                if (texts.Count == 0)
                 {
-                    var formattedText = new SQLFormatter(sqlText).Format();
-
-                    File.WriteAllText(fileName, formattedText);
-                }catch(Exception ex)
-                {
-                    File.WriteAllText(fileName, sqlText);
+                    /* no text rows: keep writing an empty file, as before */
+                    texts.Add(new SQLText());
                 }
+                foreach (var text in texts)
+                {
+                    var fileName = FileNameForText(baseFileName, text, usedNames);
+                    try
+                    {
+                        var formattedText = new SQLFormatter(text.Text).Format();
 
-                changedItems.Add(new ChangedItem(fileName, item.Oprid));
+                        File.WriteAllText(fileName, formattedText);
+                    }catch(Exception ex)
+                    {
+                        File.WriteAllText(fileName, text.Text);
+                    }
+
+                    changedItems.Add(new ChangedItem(fileName, item.Oprid));
+                }
 
                 current++;
                 ReportProgress(((int)(((current / total) * 10000)) / (double)100));
 
             }
             return changedItems;
+        }
+
+        /* PeopleTools database types (translate values of the DBTYPE field). A blank DBTYPE is the default
+         * text, used on every platform that has no text of its own. */
+        private static readonly Dictionary<string, string> PlatformNames = new Dictionary<string, string>
+        {
+            { "0", "SQLBase" }, { "1", "DB2" }, { "2", "Oracle" }, { "3", "Informix" }, { "4", "DB2_UNIX" },
+            { "5", "AllBase" }, { "6", "Sybase" }, { "7", "Microsoft" }, { "8", "DB2_400" }
+        };
+
+        private static string FileNameForText(string baseFileName, SQLText text, HashSet<string> usedNames)
+        {
+            var parts = new List<string>();
+            if (text.Market.Length > 0 && text.Market != "GBL")
+            {
+                parts.Add(text.Market);
+            }
+            if (text.EffDt.Length > 0 && text.EffDt != "1900-01-01")
+            {
+                parts.Add(text.EffDt);
+            }
+            if (text.DbType.Length > 0)
+            {
+                parts.Add(PlatformNames.TryGetValue(text.DbType, out var platform) ? platform : "DBTYPE" + text.DbType);
+            }
+
+            var extension = Path.GetExtension(baseFileName);
+            var stem = baseFileName.Substring(0, baseFileName.Length - extension.Length);
+            var fileName = parts.Count == 0 ? baseFileName : stem + "." + string.Join(".", parts) + extension;
+            for (var n = 2; usedNames.Contains(fileName); n++)
+            {
+                fileName = stem + "." + string.Join(".", parts.Append(n.ToString())) + extension;
+            }
+            usedNames.Add(fileName);
+            return fileName;
         }
     }
 
@@ -222,28 +269,56 @@ namespace Pivet.Data.Processors
             LastUpdate = dttm;
         }
 
-        internal string GetContents(OracleConnection conn)
+        /* Each text of this SQL object: one per market, database type and effective date. A long text is
+         * stored in several rows (SEQNUM), which are joined in order. Reading by SQLID alone used to run
+         * every platform's text together in one string, with no separator and in no fixed order. */
+        internal List<SQLText> GetContents(OracleConnection conn)
         {
-            MemoryStream data = new MemoryStream();
-            using (var cmd = new OracleCommand("SELECT SQLTEXT FROM PSSQLTEXTDEFN WHERE SQLID = :1 order by SEQNUM ASC", conn))
+            var texts = new List<SQLText>();
+            using (var cmd = new OracleCommand("SELECT MARKET, DBTYPE, TO_CHAR(EFFDT, 'YYYY-MM-DD'), SQLTEXT FROM PSSQLTEXTDEFN WHERE SQLID = :1 AND SQLTYPE = :2 ORDER BY MARKET, DBTYPE, EFFDT, SEQNUM", conn))
             {
-                OracleParameter contName = new OracleParameter();
-                contName.OracleDbType = OracleDbType.Varchar2;
-                contName.Value = SQLID;
-
-                cmd.Parameters.Add(contName);
+                cmd.Parameters.Add(new OracleParameter() { OracleDbType = OracleDbType.Varchar2, Value = SQLID });
+                cmd.Parameters.Add(new OracleParameter() { OracleDbType = OracleDbType.Varchar2, Value = SqlType });
                 using (var reader = cmd.ExecuteReader())
                 {
+                    SQLText current = null;
+                    MemoryStream data = null;
                     while (reader.Read())
                     {
-                        var blob = reader.GetOracleClob(0);
+                        var market = reader.IsDBNull(0) ? "" : reader.GetString(0).Trim();
+                        var dbType = reader.IsDBNull(1) ? "" : reader.GetString(1).Trim();
+                        var effDt = reader.IsDBNull(2) ? "" : reader.GetString(2);
+                        if (current == null || current.Market != market || current.DbType != dbType || current.EffDt != effDt)
+                        {
+                            if (current != null)
+                            {
+                                current.Text = Encoding.Unicode.GetString(data.ToArray()).Split('\0')[0];
+                                texts.Add(current);
+                            }
+                            current = new SQLText { Market = market, DbType = dbType, EffDt = effDt };
+                            data = new MemoryStream();
+                        }
+                        var blob = reader.GetOracleClob(3);
                         blob.CopyTo(data);
                         blob.Close();
+                    }
+                    if (current != null)
+                    {
+                        current.Text = Encoding.Unicode.GetString(data.ToArray()).Split('\0')[0];
+                        texts.Add(current);
                     }
                 }
             }
 
-            return Encoding.Unicode.GetString(data.ToArray()).Split('\0')[0];
+            return texts;
         }
+    }
+
+    class SQLText
+    {
+        internal string Market = "";
+        internal string DbType = "";
+        internal string EffDt = "";
+        internal string Text = "";
     }
 }
