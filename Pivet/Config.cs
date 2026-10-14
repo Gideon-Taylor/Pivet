@@ -183,6 +183,15 @@ namespace Pivet
         [JsonIgnore]
         public string PushRef => UsesBranch ? "refs/heads/" + Branch.Trim() : "refs/heads/master";
 
+        /* Stop before committing when the extract has lost more than this percentage of the files in the
+         * last commit. A run that fails or skips a data processor would otherwise delete them from the
+         * repository. Default 50; 100 turns the check off. */
+        [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+        public int? MaxFileLossPercent;
+
+        [JsonIgnore]
+        public int FileLossLimit => MaxFileLossPercent ?? 50;
+
         [JsonIgnore]
         public string Password
         {
