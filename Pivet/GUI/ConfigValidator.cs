@@ -343,6 +343,11 @@ namespace Pivet.GUI
                     result.AddError($"'{job.Repository.Branch}' is not a valid branch name", $"{context}.Repository.Branch");
                 }
 
+                if (job.Repository.MaxFileLossPercent is int loss && (loss < 0 || loss > 100))
+                {
+                    result.AddError($"MaxFileLossPercent must be between 0 and 100 (it is {loss})", $"{context}.Repository.MaxFileLossPercent");
+                }
+
                 if (job.Repository.UsesBranch && config?.Jobs != null)
                 {
                     var sharing = config.Jobs.Where(j => j != job && j.Repository != null

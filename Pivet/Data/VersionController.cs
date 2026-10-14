@@ -185,6 +185,48 @@ namespace Pivet.Data
             }
         }
 
+        /* A run that fails or skips a data processor leaves most of the files unwritten, and committing it
+         * would delete them from the repository (2 files left of 22,381 in one case). Stop before any commit
+         * or push when the extract has lost more than MaxFileLossPercent of the last commit's files. */
+        private bool TooManyFilesLost(int deletedCount, int newCount)
+        {
+            Commit tip = _repository.Head.Tip;
+            if (tip == null || config.FileLossLimit >= 100)
+            {
+                return false;
+            }
+
+            int committed = CountFiles(tip.Tree);
+            int extracted = committed - deletedCount + newCount;
+            if (committed == 0 || (long)extracted * 100 >= (long)committed * (100 - config.FileLossLimit))
+            {
+                return false;
+            }
+
+            Logger.Error($"Stopped before committing: this extract has {extracted} files, but the last commit has {committed}, " +
+                $"so committing it would delete more than {config.FileLossLimit}% of them. A run that fails or skips a data processor " +
+                "does this. Nothing was committed or pushed. If the deletions are intended, raise the job's Repository.MaxFileLossPercent " +
+                "(100 turns the check off).");
+            return true;
+        }
+
+        private static int CountFiles(Tree tree)
+        {
+            int count = 0;
+            foreach (TreeEntry entry in tree)
+            {
+                if (entry.TargetType == TreeEntryTargetType.Tree)
+                {
+                    count += CountFiles((Tree)entry.Target);
+                }
+                else if (entry.TargetType == TreeEntryTargetType.Blob)
+                {
+                    count++;
+                }
+            }
+            return count;
+        }
+
         private Credentials Credentials(string url, string usernameFromUrl, SupportedCredentialTypes types)
         {
             return new UsernamePasswordCredentials { Username = config.User, Password = config.Password };
@@ -215,8 +257,16 @@ namespace Pivet.Data
             double current = 0;
             ReportProgress(0);
 
-            List<string> changedOrNewItems = _repository.RetrieveStatus().Where(p => p.State == FileStatus.ModifiedInWorkdir || p.State == FileStatus.NewInWorkdir).Select(o => o.FilePath).ToList();
-            List<string> deletedFiles = _repository.RetrieveStatus().Where(p => p.State == FileStatus.DeletedFromWorkdir || p.State == FileStatus.DeletedFromIndex).Select(o => o.FilePath).ToList();
+            RepositoryStatus status = _repository.RetrieveStatus();
+            List<string> changedOrNewItems = status.Where(p => p.State == FileStatus.ModifiedInWorkdir || p.State == FileStatus.NewInWorkdir).Select(o => o.FilePath).ToList();
+            List<string> deletedFiles = status.Where(p => p.State == FileStatus.DeletedFromWorkdir || p.State == FileStatus.DeletedFromIndex).Select(o => o.FilePath).ToList();
+            int newCount = status.Count(p => p.State == FileStatus.NewInWorkdir);
+
+            if (TooManyFilesLost(deletedFiles.Count, newCount))
+            {
+                return false;
+            }
+
             double total = 0;
             if (config.CommitByOprid)
             {
